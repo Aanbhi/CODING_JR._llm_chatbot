@@ -1,38 +1,74 @@
-# LLM Chatbot + Attachment Analyzer
+LLM Chatbot – Project Tasks and Implementation Guide
 
-This repo contains a FastAPI backend and a Streamlit frontend that:  
-- Provide a `/chat` endpoint (calls OpenAI).  
-- Provide a `/upload` endpoint to accept PDFs, images, and text files, extract text (PyMuPDF/Tesseract), and analyze with OpenAI.  
-- Streamlit UI that talks to the backend for chat and file uploads.
+Overview
 
-**Security:** Revoke any leaked OpenAI keys. Do NOT commit keys to source control. Use environment variables or Render secrets.
+This document outlines the multi-stage development of an advanced LLM-based chatbot, with incremental enhancements across multiple tasks. Each stage builds upon the previous, aiming for a production-ready, fully deployed chatbot.
 
-## Files
-- `app/main.py` - FastAPI backend (chat + upload endpoints)
-- `app/streamlit_app.py` - Streamlit GUI frontend
-- `Dockerfile` - Container image that installs Tesseract/poppler and runs FastAPI + Streamlit
-- `requirements.txt` - Python dependencies
-- `.dockerignore` - Docker ignore file
-- `README.md` - (this file)
+The project consists of the following stages:
 
-## Local testing
-1. Build the image:
-```bash
-docker build -t llm-chatbot .
-```
+1. Basic chatbot deployment using Docker.
+2. Attachment analysis (images, PDFs, text files).
+3. Vector Embedding and Retrieval-Augmented Generation (RAG).
+4. Agentic AI integration.
+5. Function-calling framework for tool integration.
 
-2. Run (replace `sk-NEW` with your new key):
-```bash
-docker run -e OPENAI_API_KEY="sk-NEW" -e BACKEND_URL="http://localhost:10000" -p 10000:10000 -p 8501:8501 llm-chatbot
-```
+Task 1 – LLM Chatbot with Docker
 
-3. Open Streamlit UI: [http://localhost:8501](http://localhost:8501)
+Goal:
 
-4. Test API: POST [http://localhost:10000/chat](http://localhost:10000/chat) or /upload
+* Develop and deploy a basic LLM chatbot using Docker.
 
-## Deploy to Render
+Task 2 – Attachment Analysis Capability
 
-1. Push this repo to GitHub.
-2. Create a Render Web Service (Docker).
-3. Add `OPENAI_API_KEY` as a secret environment variable in Render.
-4. Deploy.
+Goal:
+
+* Extend the chatbot to accept and analyze user attachments, including images, PDFs, and text files.
+* Implement extraction pipelines using tools such as PyMuPDF (PDF), Tesseract OCR (images), and plain-text parsers.
+
+Implementation Steps:
+
+1. Research algorithms and techniques for processing different file types.
+2. Implement an /upload endpoint to handle file uploads.
+3. Integrate extraction logic and LLM analysis.
+
+
+Task 3 – Vector Embedding and Retrieval-Augmented Generation (RAG)
+
+Goal:
+
+* Implement vector embeddings for uploaded documents and enable RAG for context-aware responses.
+
+Implementation Steps:
+
+1. Extract and chunk text from documents.
+2. Generate embeddings using OpenAI or other models.
+3. Store embeddings in a vector database such as FAISS, Chroma, or Milvus.
+4. Retrieve relevant chunks on user queries.
+5. Combine retrieved chunks into prompts for LLM responses.
+
+
+Task 4 – Agentic AI Integration
+
+Goal:
+
+* Add autonomous decision-making capabilities to the chatbot, enabling it to act as an AI agent.
+
+Implementation Steps:
+
+1. Integrate an agentic framework such as LangChain Agents.
+2. Configure the chatbot to decide actions and reasoning paths dynamically.
+
+
+Task 5 – Function-Calling Framework and External Tools
+
+Goal:
+
+* Extend the chatbot to trigger external tools for advanced capabilities beyond file reading.
+* Implement at least three tools such as Web Search and Retrieval, Code Snippet Runner (sandboxed), and Data Formatter/Converter.
+
+Implementation Steps:
+
+1. Implement function-calling architecture.
+2. Integrate tools with proper input and output handling.
+3. Enable multi-step tool chaining.
+
