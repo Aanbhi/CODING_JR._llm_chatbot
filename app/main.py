@@ -2,13 +2,11 @@
 import os
 import io
 import uuid
-import math
 import json
 import pickle
 import time
 import magic
 import fitz                 # PyMuPDF
-from pdf2image import convert_from_bytes
 from PIL import Image
 import pytesseract
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query as FastAPIQuery
@@ -41,6 +39,7 @@ embeddings: Optional[np.ndarray] = None
 metadata: List[Dict[str, Any]] = []
 
 def save_db():
+    """Persist embeddings + metadata to disk."""
     global embeddings, metadata
     if embeddings is not None:
         np.save(EMBEDDINGS_FILE, embeddings)
@@ -48,6 +47,7 @@ def save_db():
         pickle.dump(metadata, f)
 
 def load_db():
+    """Load embeddings + metadata from disk into memory."""
     global embeddings, metadata
     if os.path.exists(EMBEDDINGS_FILE):
         embeddings = np.load(EMBEDDINGS_FILE)
@@ -65,18 +65,18 @@ load_db()
 # Simple nearest-neighbor wrapper (re-fits on upsert)
 _knn: Optional[NearestNeighbors] = None
 def fit_knn():
+    """Fit in-memory NearestNeighbors on current embeddings."""
     global _knn, embeddings
     if embeddings is None or len(embeddings) == 0:
         _knn = None
         return
-    # using cosine similarity via metric='cosine' (scikit's NearestNeighbors returns distance)
     _knn = NearestNeighbors(n_neighbors=min(10, len(embeddings)), metric="cosine")
     _knn.fit(embeddings)
 
 def semantic_search(query_emb: np.ndarray, top_k: int = 4):
     """
-    Returns list of (score, metadata_item, text) for top_k results.
-    score is cosine distance (lower means more similar).
+    Returns list of dicts for top_k results with fields: score (cosine distance), id, text, source.
+    Lower score == more similar.
     """
     global _knn, embeddings, metadata
     if _knn is None:
@@ -91,7 +91,7 @@ def semantic_search(query_emb: np.ndarray, top_k: int = 4):
     return results
 
 # ----------------------
-# Utility functions
+# Utility functions (OpenAI)
 # ----------------------
 def call_openai_chat(system_prompt: str, user_prompt: str, max_tokens: int = 512) -> str:
     payload = {
@@ -111,7 +111,6 @@ def call_openai_chat(system_prompt: str, user_prompt: str, max_tokens: int = 512
 
 def call_openai_embeddings(texts: List[str]) -> List[List[float]]:
     """Call OpenAI embeddings endpoint via requests (batch). Returns list of vectors."""
-    # chunk large batches to avoid extremely large payloads (OpenAI has token/size limits)
     results = []
     batch_size = 10
     for i in range(0, len(texts), batch_size):
@@ -121,7 +120,6 @@ def call_openai_embeddings(texts: List[str]) -> List[List[float]]:
         if r.status_code != 200:
             raise RuntimeError(f"OpenAI Embeddings API error: {r.status_code} {r.text}")
         data = r.json()
-        # each item has "embedding"
         for item in data["data"]:
             results.append(item["embedding"])
         time.sleep(0.05)  # small delay to be polite
@@ -140,15 +138,14 @@ def chunk_text(text: str, max_chars: int = 1000, overlap: int = 200):
     text_len = len(text)
     while start < text_len:
         end = min(start + max_chars, text_len)
-        chunk = text[start:end]
-        chunks.append(chunk)
+        chunks.append(text[start:end])
         if end == text_len:
             break
         start = end - overlap
     return chunks
 
 # ----------------------
-# File parsing (unchanged logic, adapted)
+# File parsing
 # ----------------------
 def ocr_image_bytes(image_bytes: bytes) -> str:
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -181,10 +178,8 @@ def upsert_document_chunks(chunks: List[str], source: str):
     global embeddings, metadata
     if not chunks:
         return []
-    # compute embeddings
     vecs = call_openai_embeddings(chunks)  # list of lists
     vecs_np = np.array(vecs).astype("float32")
-    # create metadata entries
     ids = []
     for chunk_text, vec in zip(chunks, vecs_np):
         doc_id = str(uuid.uuid4())
@@ -195,7 +190,6 @@ def upsert_document_chunks(chunks: List[str], source: str):
         else:
             embeddings = np.vstack([embeddings, vec.reshape(1, -1)])
         ids.append(doc_id)
-    # persist and re-fit
     save_db()
     fit_knn()
     return ids
@@ -212,7 +206,6 @@ class QueryIn(BaseModel):
 
 @app.on_event("startup")
 def startup_event():
-    # ensure knn is fitted
     fit_knn()
 
 @app.post("/chat")
@@ -223,11 +216,9 @@ def chat(q: QueryIn):
     """
     try:
         if q.use_rag and embeddings is not None and len(metadata) > 0:
-            # get query embedding
             q_emb = call_openai_embeddings([q.message])[0]
             q_emb_np = np.array(q_emb).astype("float32")
             retrieved = semantic_search(q_emb_np, top_k=q.top_k or 4)
-            # build context from retrieved passages
             context_texts = []
             for idx, item in enumerate(retrieved):
                 context_texts.append(f"Source {idx+1} (score: {item['score']:.4f}):\n{item['text']}")
@@ -243,7 +234,6 @@ def chat(q: QueryIn):
             answer = call_openai_chat(system_prompt, user_prompt)
             return {"answer": answer, "retrieved": retrieved}
         else:
-            # plain chat without RAG
             system_prompt = "You are a helpful assistant."
             answer = call_openai_chat(system_prompt, q.message)
             return {"answer": answer}
@@ -264,10 +254,8 @@ async def upload_file(file: UploadFile = File(...)):
         if mtype == "application/pdf" or file.filename.lower().endswith(".pdf"):
             pages = extract_text_from_pdf_bytes(content)
             full_text = "\n\n---PAGE---\n\n".join(pages).strip()
-            # chunk
             chunks = chunk_text(full_text, max_chars=1000, overlap=200)
             ids = upsert_document_chunks(chunks, source=file.filename)
-            # basic summary via LLM (reuse previous call pattern)
             summary_prompt = "This is a PDF document. Please summarize key points in 3-6 sentences."
             summary = call_openai_chat("You summarize documents.", summary_prompt + "\n\n" + full_text[:20000])
             result.update({
@@ -334,3 +322,19 @@ def list_docs(limit: int = FastAPIQuery(20, ge=1, le=200)):
     """Return metadata list for stored chunks (limited)."""
     global metadata
     return {"count": len(metadata), "items": metadata[:limit]}
+
+# ----------------------
+# Agent endpoint (Agentic AI)
+# ----------------------
+from .agent import agentic_response  # noqa: E402 (import after definitions to avoid circulars)
+
+@app.post("/agent")
+def agent_chat(q: QueryIn):
+    """
+    Agent endpoint: delegates to agentic_response (tool-using LLM loop).
+    """
+    try:
+        result = agentic_response(q.message, use_rag=q.use_rag, top_k=q.top_k or 4)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
