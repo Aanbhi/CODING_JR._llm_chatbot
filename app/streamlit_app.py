@@ -7,9 +7,9 @@ import time
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:10000")
 
 st.set_page_config(page_title="LLM Chatbot + RAG", page_icon="🤖", layout="wide")
-st.title("🤖 LLM Chatbot & Attachment Analyzer (with RAG)")
+st.title("🤖 LLM Chatbot & Attachment Analyzer (with RAG & Agentic AI)")
 
-tab1, tab2, tab3 = st.tabs(["💬 Chatbot", "📎 Upload & Analyze", "📚 Stored Chunks"])
+tab1, tab2, tab3, tab4 = st.tabs(["💬 Chatbot", "📎 Upload & Analyze", "📚 Stored Chunks", "🤖 Agentic AI"])
 
 with tab1:
     st.subheader("Chat with the LLM")
@@ -58,7 +58,7 @@ with tab2:
 
 with tab3:
     st.subheader("Stored chunks (preview)")
-    col1, col2 = st.columns([1,3])
+    col1, col2 = st.columns([1, 3])
     with col1:
         limit = st.slider("How many items to list", min_value=1, max_value=200, value=10)
         if st.button("Refresh list"):
@@ -77,8 +77,40 @@ with tab3:
         items = st.session_state.get("items", [])
         if items:
             for it in items:
-                st.markdown(f"**ID:** {it['id']}  — source: {it.get('source')} — ts: {time.ctime(it.get('ts',0))}")
-                st.write(it['text'][:800])
+                ts_fmt = time.ctime(it.get("ts", 0)) if it.get("ts") else "n/a"
+                st.markdown(f"**ID:** {it['id']} — source: {it.get('source', 'n/a')} — ts: {ts_fmt}")
+                st.write(it["text"][:800])
                 st.write("---")
         else:
             st.info("No items loaded. Click 'Refresh list' to load stored chunks.")
+
+with tab4:
+    st.subheader("Agent-powered chatbot")
+    user_msg = st.text_area("Enter your query:", height=100, key="agent_q")
+    if st.button("Ask Agent"):
+        if user_msg.strip():
+            with st.spinner("Agent thinking..."):
+                try:
+                    resp = requests.post(
+                        f"{BACKEND_URL}/agent",
+                        json={"message": user_msg, "use_rag": True, "top_k": 4},
+                        timeout=120,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        st.markdown("### Agent Answer")
+                        st.write(data.get("answer", "No answer"))
+                        if "retrieved" in data and data["retrieved"]:
+                            st.markdown("### Retrieved Passages (Agent)")
+                            for i, r in enumerate(data["retrieved"], start=1):
+                                st.markdown(f"**Source {i}** — score: {r['score']:.4f} — id: {r['id']}")
+                                st.write(r["text"][:1000])
+                        if "trace" in data:
+                            st.markdown("### Agent Trace")
+                            st.json(data["trace"])
+                    else:
+                        st.error(resp.text)
+                except Exception as e:
+                    st.error(f"Request failed: {e}")
+        else:
+            st.warning("Please enter a message for the agent.")
