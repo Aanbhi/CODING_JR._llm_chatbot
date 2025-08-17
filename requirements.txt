@@ -3,7 +3,7 @@ uvicorn[standard]==0.22.0
 requests==2.31.0
 pydantic==2.5.1
 gunicorn==21.2.0
-pytesseract==0.3.11
+pytesseract==0.3.13
 pdf2image==1.16.0
 PyMuPDF==1.22.5
 Pillow==10.0.0
