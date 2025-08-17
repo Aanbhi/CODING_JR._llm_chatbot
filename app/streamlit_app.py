@@ -9,8 +9,17 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:10000")
 st.set_page_config(page_title="LLM Chatbot + RAG", page_icon="🤖", layout="wide")
 st.title("🤖 LLM Chatbot & Attachment Analyzer (with RAG & Agentic AI)")
 
-tab1, tab2, tab3, tab4 = st.tabs(["💬 Chatbot", "📎 Upload & Analyze", "📚 Stored Chunks", "🤖 Agentic AI"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "💬 Chatbot",
+    "📎 Upload & Analyze",
+    "📚 Stored Chunks",
+    "🤖 Agentic AI",
+    "🛠️ Agent Tools"
+])
 
+# -----------------------
+# Tab 1 - Chatbot
+# -----------------------
 with tab1:
     st.subheader("Chat with the LLM")
     user_input = st.text_area("Your message:", height=120)
@@ -38,6 +47,9 @@ with tab1:
                 except Exception as e:
                     st.error(f"Request failed: {e}")
 
+# -----------------------
+# Tab 2 - Upload & Analyze
+# -----------------------
 with tab2:
     st.subheader("Upload a file for analysis and indexing")
     uploaded_file = st.file_uploader("Choose a file (PDF, image, or text)", type=None)
@@ -56,6 +68,9 @@ with tab2:
                 except Exception as e:
                     st.error(f"Request failed: {e}")
 
+# -----------------------
+# Tab 3 - Stored Chunks
+# -----------------------
 with tab3:
     st.subheader("Stored chunks (preview)")
     col1, col2 = st.columns([1, 3])
@@ -84,6 +99,9 @@ with tab3:
         else:
             st.info("No items loaded. Click 'Refresh list' to load stored chunks.")
 
+# -----------------------
+# Tab 4 - Agentic AI
+# -----------------------
 with tab4:
     st.subheader("Agent-powered chatbot")
     user_msg = st.text_area("Enter your query:", height=100, key="agent_q")
@@ -114,3 +132,28 @@ with tab4:
                     st.error(f"Request failed: {e}")
         else:
             st.warning("Please enter a message for the agent.")
+
+# -----------------------
+# Tab 5 - Agent Tools
+# -----------------------
+with tab5:
+    st.subheader("Agentic AI with Tools")
+    user_msg = st.text_area("Enter your query:", height=100, key="agent_tools")
+    if st.button("Ask with Tools"):
+        if user_msg.strip():
+            with st.spinner("Agent reasoning..."):
+                try:
+                    resp = requests.post(f"{BACKEND_URL}/agent", json={"message": user_msg, "use_rag": False}, timeout=120)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        st.markdown("### Agent Answer")
+                        st.write(data.get("answer", "No answer"))
+                        if "trace" in data:
+                            st.markdown("### Execution Trace")
+                            st.json(data["trace"])
+                    else:
+                        st.error(resp.text)
+                except Exception as e:
+                    st.error(f"Request failed: {e}")
+        else:
+            st.warning("Please enter a message.")
