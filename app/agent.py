@@ -1,25 +1,22 @@
-# app/agent.py
 """
 Agentic AI module:
-- Planner LLM decides which "tool" to use:
-  - RAG_Search: perform semantic search over stored doc chunks and answer using retrieved context.
-  - LLM_Response: answer directly with the LLM.
-- One-step agent (plan -> act -> answer) with trace. Can be extended to multi-step loops.
-- Avoids circular import with main.py by re-implementing minimal utilities and
-  loading embeddings/metadata from disk at call time.
+- Planner agent (RAG vs direct LLM).
+- Tool-calling agent (function calls: web_search, code_runner, data_converter).
+- Both return final answer + trace.
 """
 
 import os
 import json
 import time
-from typing import Any, Dict, List, Optional
-
-import numpy as np
-from sklearn.neighbors import NearestNeighbors
-import requests
 import pickle
+import requests
+import numpy as np
+from typing import Any, Dict, List, Optional
+from sklearn.neighbors import NearestNeighbors
 
-# ---- Shared config (must match main.py) ----
+from .tools import TOOLS   # Task 5 tools
+
+# ---- Shared config ----
 EMBEDDING_MODEL = "text-embedding-3-small"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
@@ -33,7 +30,7 @@ DB_DIR = os.getenv("DOC_STORE_DIR", "/app/data")
 EMBEDDINGS_FILE = os.path.join(DB_DIR, "embeddings.npy")
 METADATA_FILE = os.path.join(DB_DIR, "metadata.pkl")
 
-# ---- Minimal OpenAI helpers ----
+# ---- OpenAI helpers ----
 def _call_openai_chat(system_prompt: str, user_prompt: str, max_tokens: int = 512) -> str:
     payload = {
         "model": "gpt-4o-mini",
@@ -65,7 +62,7 @@ def _call_openai_embeddings(texts: List[str]) -> List[List[float]]:
         time.sleep(0.05)
     return results
 
-# ---- DB loading + simple search (fresh each call to avoid circular imports) ----
+# ---- DB loading + semantic search ----
 def _load_db():
     if not os.path.exists(EMBEDDINGS_FILE) or not os.path.exists(METADATA_FILE):
         return None, []
@@ -82,15 +79,15 @@ def _semantic_search_local(query_emb: np.ndarray, top_k: int = 4):
     knn = NearestNeighbors(n_neighbors=n_neighbors, metric="cosine")
     knn.fit(emb)
     distances, idxs = knn.kneighbors(query_emb.reshape(1, -1), n_neighbors=n_neighbors)
-    distances = distances[0].tolist()
-    idxs = idxs[0].tolist()
     results = []
-    for d, i in zip(distances, idxs):
+    for d, i in zip(distances[0], idxs[0]):
         item = meta[i]
         results.append({"score": float(d), "id": item["id"], "text": item["text"], "source": item.get("source")})
     return results
 
-# ---- Agent ----
+# =========================
+# 1. Planner Agent (RAG vs LLM)
+# =========================
 PLANNER_SYSTEM_PROMPT = (
     "You are an AI agent with tools:\n"
     "- RAG_Search: search uploaded docs (vector search) and answer using retrieved context.\n"
@@ -106,54 +103,67 @@ ANSWER_SYSTEM_PROMPT = (
     "If the context does not contain the answer, say you don't know and offer a brief suggestion."
 )
 
-def agentic_response(user_message: str, use_rag: bool = True, top_k: int = 4) -> Dict[str, Any]:
-    """
-    One-step agent:
-      1) Planner chooses an action in JSON.
-      2) Execute action:
-         - If RAG_Search and use_rag True: perform local vector search and answer using context.
-         - If LLM_Response: answer directly.
-      3) Return final answer and a trace of decisions.
-    """
-    # 1) Plan
+def planner_agent(user_message: str, use_rag: bool = True, top_k: int = 4) -> Dict[str, Any]:
     planner_raw = _call_openai_chat(PLANNER_SYSTEM_PROMPT, f"User: {user_message}")
     trace: List[Any] = [{"planner_raw": planner_raw}]
-
-    # 2) Parse JSON plan (robustly)
-    plan: Optional[Dict[str, Any]] = None
     try:
         plan = json.loads(planner_raw.strip())
     except Exception:
-        # If the model failed JSON, fallback to direct LLM answer
         final_ans = _call_openai_chat(ANSWER_SYSTEM_PROMPT, f"User: {user_message}")
-        trace.append({"note": "Planner JSON parse failed; used direct answer."})
+        trace.append({"note": "Planner JSON parse failed"})
         return {"answer": final_ans, "trace": trace}
 
     trace.append({"planner": plan})
 
-    # 3) Execute plan
-    if "action" in plan and plan["action"] == "RAG_Search" and use_rag:
-        # compute embedding for retrieval input (can be the user msg or plan input)
-        query_for_search = plan.get("input") or user_message
-        q_emb = _call_openai_embeddings([query_for_search])[0]
+    if plan.get("action") == "RAG_Search" and use_rag:
+        q_emb = _call_openai_embeddings([plan.get("input") or user_message])[0]
         q_emb_np = np.array(q_emb, dtype="float32")
         retrieved = _semantic_search_local(q_emb_np, top_k=top_k)
         context_str = "\n\n---\n\n".join([r["text"] for r in retrieved]) if retrieved else ""
-        user_prompt = (
-            (f"Context:\n{context_str}\n\n" if context_str else "") +
-            f"User question:\n{user_message}\n\n"
-            "Answer concisely. Cite sources by number (Source 1, Source 2) when you use them."
-        )
+        user_prompt = f"Context:\n{context_str}\n\nUser question:\n{user_message}"
         final_ans = _call_openai_chat(ANSWER_SYSTEM_PROMPT, user_prompt)
         return {"answer": final_ans, "retrieved": retrieved, "trace": trace}
 
-    # Otherwise default to LLM_Response (or if use_rag is False)
-    if "action" in plan and plan["action"] == "LLM_Response":
-        instruction = plan.get("input") or f"Answer the user's question: {user_message}"
-        final_ans = _call_openai_chat(ANSWER_SYSTEM_PROMPT, instruction)
-        return {"answer": final_ans, "trace": trace}
-
-    # Fallback: direct answer
-    final_ans = _call_openai_chat(ANSWER_SYSTEM_PROMPT, f"User: {user_message}")
-    trace.append({"note": "Fallback direct answer."})
+    # Default to LLM response
+    instruction = plan.get("input") or user_message
+    final_ans = _call_openai_chat(ANSWER_SYSTEM_PROMPT, instruction)
     return {"answer": final_ans, "trace": trace}
+
+# =========================
+# 2. Tool Agent (function calling)
+# =========================
+TOOL_SYSTEM_PROMPT = """You are an agent that can answer OR call tools.
+If a tool is needed, respond with JSON: {"tool": "<tool_name>", "args": {...}}
+Available tools: web_search, code_runner, data_converter.
+Otherwise, answer directly.
+"""
+
+def tool_agent(user_message: str) -> Dict[str, Any]:
+    try:
+        raw = _call_openai_chat(TOOL_SYSTEM_PROMPT, user_message, max_tokens=600)
+    except Exception as e:
+        return {"answer": f"LLM error: {e}", "trace": []}
+
+    trace = [{"step": "llm_decision", "content": raw}]
+    answer = raw
+
+    try:
+        parsed = json.loads(raw)
+        if "tool" in parsed:
+            tool = parsed["tool"]
+            args = parsed.get("args", {})
+            func = TOOLS.get(tool)
+            if func:
+                tool_result = func(**args)
+                trace.append({"step": "tool_call", "tool": tool, "args": args, "result": tool_result})
+                final = _call_openai_chat(
+                    "You are a helpful assistant. Use the tool result to answer.",
+                    f"User asked: {user_message}\n\nTool output:\n{tool_result}",
+                    max_tokens=500
+                )
+                trace.append({"step": "final_answer", "content": final})
+                answer = final
+    except Exception:
+        pass
+
+    return {"answer": answer, "trace": trace}
