@@ -15,7 +15,12 @@ def tool_code_runner(code: str, lang: str = "python") -> str:
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
             f.write(code)
             fname = f.name
-        result = subprocess.run(["python", fname], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            ["python", fname],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
         return result.stdout if result.stdout else result.stderr
     except Exception as e:
         return f"Error: {e}"
@@ -33,6 +38,7 @@ def tool_data_converter(data: str, target_format: str = "json") -> str:
     except Exception as e:
         return f"Conversion failed: {e}"
 
+# Tool registry
 TOOLS = {
     "web_search": tool_web_search,
     "code_runner": tool_code_runner,
